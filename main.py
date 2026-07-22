@@ -2,13 +2,12 @@ import torch
 import torch.nn.functional as F
 import gymnasium as gym
 import torchvision.transforms.functional as TF
-from dataset import TransitionDataLoader, generate_training_data, _randomize_start_goal
-from gymnasium.envs.toy_text.frozen_lake import generate_random_map
+from dataset import TransitionDataLoader, generate_training_data
 from model import Thinker
 from config import NUM_EPOCHS, EMBED_SIZE, BATCH_SIZE, LAMBDA, LEARNING_RATE
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from utils import save_episode_gif, find_latest_checkpoint
+from utils import save_episode_gif, find_latest_checkpoint, get_map
 
 def _get_frame(env, device):
     image = env.render()
@@ -45,9 +44,7 @@ def run(thinker, depth=8, save_gif_path=None, device=None):
     thinker.eval()
     device = device or next(thinker.parameters()).device
 
-    base_desc = generate_random_map(size=4, p=0.8)
-    desc, start_state, goal_state = _randomize_start_goal(base_desc)
-
+    desc = get_map()
     env = gym.make(
         "FrozenLake-v1",
         render_mode="rgb_array",
@@ -55,9 +52,10 @@ def run(thinker, depth=8, save_gif_path=None, device=None):
         is_slippery=False,
     )
     env.reset()
-    env.unwrapped.s = start_state
 
+    goal_state = env.unwrapped.nrow * env.unwrapped.ncol - 1
     current_state = env.unwrapped.s
+
     env.unwrapped.s = goal_state
     goal_frame = _get_frame(env, device)
     env.unwrapped.s = current_state

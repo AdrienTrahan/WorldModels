@@ -31,8 +31,6 @@ class DataAccumulator:
 
     def __len__(self):
         return len(self.episodes)
-
-
 class TransitionDataLoader:
     def __init__(self, accumulator, batch_size, shuffle=True):
         self.accumulator = accumulator
@@ -75,50 +73,6 @@ class TransitionDataLoader:
             "next_frame": torch.as_tensor(np.stack(next_frame_batch), dtype=torch.float32),
         }
 
-
-def _reachable(grid, start, goal):
-    nrow = len(grid)
-    ncol = len(grid[0])
-    visited = {start}
-    stack = [start]
-    while stack:
-        r, c = stack.pop()
-        if (r, c) == goal:
-            return True
-        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-            nr, nc = r + dr, c + dc
-            if 0 <= nr < nrow and 0 <= nc < ncol and (nr, nc) not in visited and grid[nr][nc] != "H":
-                visited.add((nr, nc))
-                stack.append((nr, nc))
-    return False
-
-
-def _randomize_start_goal(desc, max_attempts=200):
-    grid = [list(row) for row in desc]
-    nrow = len(grid)
-    ncol = len(grid[0])
-
-    for r in range(nrow):
-        for c in range(ncol):
-            if grid[r][c] in ("S", "G"):
-                grid[r][c] = "F"
-
-    open_cells = [(r, c) for r in range(nrow) for c in range(ncol) if grid[r][c] != "H"]
-
-    start, goal = random.sample(open_cells, 2)
-    for _ in range(max_attempts):
-        start, goal = random.sample(open_cells, 2)
-        if _reachable(grid, start, goal):
-            break
-
-    grid[start[0]][start[1]] = "S"
-    grid[goal[0]][goal[1]] = "G"
-    new_desc = ["".join(row) for row in grid]
-    start_state = start[0] * ncol + start[1]
-    goal_state = goal[0] * ncol + goal[1]
-    return new_desc, start_state, goal_state
-
-
 def _worker_single(episode_idx):
     seed = episode_idx * 10000 + 42
     random.seed(seed)
@@ -126,20 +80,10 @@ def _worker_single(episode_idx):
     torch.manual_seed(seed)
 
     import gymnasium as gym
-    from gymnasium.envs.toy_text.frozen_lake import generate_random_map
     import torchvision.transforms.functional as TF
     from config import MAX_EPISODE_LEN
-
-    def to_frame(image):
-        frame = TF.rgb_to_grayscale(
-            torch.from_numpy(image).permute(2, 0, 1).float() / 255.0,
-            num_output_channels=1,
-        )
-        return TF.resize(frame, (64, 64), antialias=True)
-
-    base_desc = generate_random_map(size=4, p=0.8)
-    desc, start_state, goal_state = _randomize_start_goal(base_desc)
-
+    from utils import get_map
+    desc = get_map()
     env = gym.make(
         "FrozenLake-v1",
         render_mode="rgb_array",
@@ -147,28 +91,34 @@ def _worker_single(episode_idx):
         is_slippery=False,
     )
     env.reset()
-    env.unwrapped.s = start_state
 
+    goal_state = env.unwrapped.nrow * env.unwrapped.ncol - 1
     current_state = env.unwrapped.s
+
     env.unwrapped.s = goal_state
-    goal_frame = to_frame(env.render())
+    goal_image = env.render()
+
     env.unwrapped.s = current_state
+
+    goal_frame = TF.rgb_to_grayscale(
+        torch.from_numpy(goal_image).permute(2, 0, 1).float() / 255.0,
+        num_output_channels=1,
+    )
+    goal_frame = TF.resize(goal_frame, (64, 64), antialias=True)
 
     episode = Episode(goal=goal_frame)
 
-    fell_in_hole = False
-    hole_frame = None
-
     for step_idx in range(MAX_EPISODE_LEN):
-        if fell_in_hole:
-            action = env.action_space.sample()
-            action_onehot = torch.zeros(4, dtype=hole_frame.dtype)
-            action_onehot[action] = 1.0
-            episode.add(hole_frame, action_onehot, 0.0, True)
-            continue
+        image = env.render()
 
-        frame = to_frame(env.render())
+        frame = TF.rgb_to_grayscale(
+            torch.from_numpy(image).permute(2, 0, 1).float() / 255.0,
+            num_output_channels=1,
+        )
+        frame = TF.resize(frame, (64, 64), antialias=True)
+
         action = env.action_space.sample()
+
         _, _reward, terminated, truncated, _ = env.step(action)
 
         if step_idx == MAX_EPISODE_LEN - 1:
@@ -176,26 +126,25 @@ def _worker_single(episode_idx):
 
         action_onehot = torch.zeros(4, dtype=frame.dtype)
         action_onehot[action] = 1.0
+
         episode.add(frame, action_onehot, 0.0, False)
 
         if terminated or truncated:
-            final_frame = to_frame(env.render())
-            reached_goal = env.unwrapped.s == goal_state
+            image = env.render()
+            frame = TF.rgb_to_grayscale(
+                torch.from_numpy(image).permute(2, 0, 1).float() / 255.0,
+                num_output_channels=1,
+            )
+            frame = TF.resize(frame, (64, 64), antialias=True)
 
-            if terminated and not reached_goal:
-                fell_in_hole = True
-                hole_frame = final_frame
-                zero_action = torch.zeros(4, dtype=final_frame.dtype)
-                episode.add(final_frame, zero_action, 0.0, True)
-                continue
+            action_onehot = torch.zeros(4, dtype=frame.dtype)
+            action_onehot[env.action_space.sample()] = 1.0
+            episode.add(frame, action_onehot, 0.0, terminated or truncated)
+            if (terminated):
+                episode.add(frame, torch.zeros(4, dtype=frame.dtype), 0.0, terminated or truncated)
 
-            zero_action = torch.zeros(4, dtype=final_frame.dtype)
-            episode.add(final_frame, zero_action, 0.0, terminated or truncated)
-            if terminated:
-                episode.add(final_frame, torch.zeros(4, dtype=final_frame.dtype), 0.0, terminated or truncated)
+            env.close()
             break
-
-    env.close()
 
     acc = DataAccumulator()
     acc.add(episode)

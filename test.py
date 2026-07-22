@@ -12,6 +12,7 @@ checkpoint_path, epoch = find_latest_checkpoint("./checkpoints")
 thinker.load_state_dict(torch.load(checkpoint_path, map_location=device))
 thinker.eval()
 
+
 env = gym.make("FrozenLake-v1", render_mode="rgb_array", desc=generate_random_map(size=4, p=0.8), is_slippery=False)
 env.reset()
 
