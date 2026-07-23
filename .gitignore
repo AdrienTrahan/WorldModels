@@ -9,3 +9,9 @@ wheels/
 # Virtual environments
 .venv
 training_data.pt
+
+gifs/*
+
+checkpoints/*
+
+runs/*

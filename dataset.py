@@ -11,9 +11,10 @@ from multiprocessing import Pool, cpu_count
 
 
 class Episode:
-    def __init__(self, goal):
+    def __init__(self, goal, map_desc):
         self.data = []
         self.goal = goal
+        self.map_desc = tuple(map_desc)
 
     def add(self, obs, act, rew, done):
         self.data.append((obs, act, rew, done))
@@ -27,7 +28,7 @@ class DataAccumulator:
         self.episodes = []
 
     def add(self, episode):
-        self.episodes.append((episode.data, episode.goal))
+        self.episodes.append((episode.data, episode.goal, episode.map_desc))
 
     def __len__(self):
         return len(self.episodes)
@@ -36,29 +37,47 @@ class TransitionDataLoader:
         self.accumulator = accumulator
         self.batch_size = batch_size
         self.shuffle = shuffle
-        self.index = []
-        for ep_idx, (episode, goal) in enumerate(accumulator.episodes):
+        self.indices_by_map = {}
+        for ep_idx, episode_record in enumerate(accumulator.episodes):
+            # Old cached datasets contain (data, goal) only. Treat them
+            # independently rather than accidentally mixing unknown maps.
+            if len(episode_record) == 3:
+                episode, _goal, map_key = episode_record
+            else:
+                episode, _goal = episode_record
+                map_key = ("legacy_episode", ep_idx)
             for t in range(len(episode) - 1):
-                self.index.append((ep_idx, t))
+                self.indices_by_map.setdefault(map_key, []).append((ep_idx, t))
+
+        self.num_batches = sum(
+            (len(indices) + self.batch_size - 1) // self.batch_size
+            for indices in self.indices_by_map.values()
+        )
 
     def __len__(self):
-        return (len(self.index) + self.batch_size - 1) // self.batch_size
+        return self.num_batches
 
     def __iter__(self):
-        indices = list(range(len(self.index)))
+        batches = []
+        for map_key, map_indices in self.indices_by_map.items():
+            indices = list(map_indices)
+            if self.shuffle:
+                random.shuffle(indices)
+            for start in range(0, len(indices), self.batch_size):
+                batches.append((map_key, indices[start:start + self.batch_size]))
+
         if self.shuffle:
-            random.shuffle(indices)
+            random.shuffle(batches)
 
-        for start in range(0, len(indices), self.batch_size):
-            batch_indices = indices[start:start + self.batch_size]
-            yield self._build_batch(batch_indices)
+        for map_key, batch_indices in batches:
+            yield self._build_batch(batch_indices, map_key)
 
-    def _build_batch(self, batch_indices):
+    def _build_batch(self, batch_indices, map_key):
         frame_batch, act_batch, next_frame_batch = [], [], []
 
-        for idx in batch_indices:
-            ep_idx, t = self.index[idx]
-            episode, goal = self.accumulator.episodes[ep_idx]
+        for ep_idx, t in batch_indices:
+            episode_record = self.accumulator.episodes[ep_idx]
+            episode = episode_record[0]
 
             obs_t, act_t, _, _ = episode[t]
             obs_t1, _, _, _ = episode[t + 1]
@@ -71,6 +90,7 @@ class TransitionDataLoader:
             "frame": torch.as_tensor(np.stack(frame_batch), dtype=torch.float32),
             "action": torch.as_tensor(np.stack(act_batch), dtype=torch.float32),
             "next_frame": torch.as_tensor(np.stack(next_frame_batch), dtype=torch.float32),
+            "map_key": map_key,
         }
 
 def _worker_single(episode_idx):
@@ -106,7 +126,7 @@ def _worker_single(episode_idx):
     )
     goal_frame = TF.resize(goal_frame, (64, 64), antialias=True)
 
-    episode = Episode(goal=goal_frame)
+    episode = Episode(goal=goal_frame, map_desc=desc)
 
     for step_idx in range(MAX_EPISODE_LEN):
         image = env.render()
