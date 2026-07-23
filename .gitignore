@@ -10,8 +10,10 @@ wheels/
 .venv
 training_data.pt
 
-gifs/*
+.DS_Store
 
-checkpoints/*
+# gifs/*
 
-runs/*
+# checkpoints/*
+
+# runs/*

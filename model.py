@@ -58,9 +58,9 @@ class Thinker(nn.Module):
         super().__init__()
         self.encoder = Encoder(d=d)
         self.predictor = Predictor(d=d)
-        self.subjepa = MultiSubspaceSIGReg(embed_dim=d)
+        # self.subjepa = MultiSubspaceSIGReg(embed_dim=d)
         # self.visreg = VISReg()
-        # self.sigreg = SIGReg()
+        self.sigreg = SIGReg()
 
     def pred(self, frame, action):
         emb = self.encoder(frame)
@@ -75,7 +75,7 @@ class Thinker(nn.Module):
 
         mse_loss = nn.functional.mse_loss(emb + diff, emb_t)
         # visreg_loss = self.visreg(emb.unsqueeze(0)) + self.visreg(emb_t.unsqueeze(0))
-        visreg_loss = self.subjepa(emb.unsqueeze(1)) + self.subjepa(emb_t.unsqueeze(1))
-        # visreg_loss = self.sigreg(emb.unsqueeze(0)) + self.sigreg(emb_t.unsqueeze(0))
+        # visreg_loss = self.subjepa(emb.unsqueeze(1)) + self.subjepa(emb_t.unsqueeze(1))
+        visreg_loss = self.sigreg(emb.unsqueeze(0)) + self.sigreg(emb_t.unsqueeze(0))
 
         return mse_loss, visreg_loss
